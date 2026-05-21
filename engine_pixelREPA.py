@@ -7,7 +7,6 @@ import cv2
 
 import util.misc as misc
 import util.lr_sched as lr_sched
-import torch_fidelity
 from util.fid import calculate_fid
 import copy
 
