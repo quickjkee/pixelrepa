@@ -312,7 +312,7 @@ class MaskedTransformerAdapter(nn.Module):
         for i, block in enumerate(self.blocks):
             x = block(x, c, self.feat_rope_incontext)
 
-        x = x[:, :self.in_context_len]
+        x = x[:, self.in_context_len:]
         
         if self.hidden_size != self.out_channels:
             x = self.projection_layer(x)
