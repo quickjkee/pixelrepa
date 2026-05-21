@@ -71,6 +71,9 @@ def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, ep
                 log_writer.add_scalar('train_loss_mta', loss_value_mta_reduce, epoch_1000x)
                 log_writer.add_scalar('lr', lr, epoch_1000x)
 
+        if data_iter_step >= len(data_loader):
+            break
+
 
 
 def evaluate(model_without_ddp, args, epoch, batch_size=64, log_writer=None):
