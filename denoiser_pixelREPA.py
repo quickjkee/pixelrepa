@@ -4,6 +4,20 @@ from model_pixelREPA import JiT_models, MaskedTransformerAdapter_models
 import torch.nn.functional as F
 from timm import create_model
 
+class RegisterDINOPooler(nn.Module):
+    def __init__(self, num_regs=32, dino_dim=768, num_heads=12):
+        super().__init__()
+        self.queries = nn.Parameter(torch.randn(1, num_regs, dino_dim) * 0.02)
+        self.attn = nn.MultiheadAttention(dino_dim, num_heads, batch_first=True)
+        self.norm = nn.LayerNorm(dino_dim)
+
+    def forward(self, dino_feats):
+        # dino_feats: [B, 256, D]
+        B = dino_feats.shape[0]
+        q = self.queries.expand(B, -1, -1)
+        out, _ = self.attn(q, dino_feats, dino_feats)
+        return self.norm(out)
+
 
 def build_mlp(hidden_size, projector_dim, z_dim):
     return nn.Sequential(
@@ -65,6 +79,11 @@ class Denoiser(nn.Module):
             out_channels=repa_z_dim,
             num_classes=args.class_num,
         )
+        self.register_dino_pooler = RegisterDINOPooler(
+                num_regs=32,
+                dino_dim=repa_z_dim,
+                num_heads=12,
+            )
         
         self.patch_size = self.net.patch_size
         self.patch_mask_ratio = args.patch_mask_ratio
@@ -140,8 +159,12 @@ class Denoiser(nn.Module):
         else:
             repa_x = rescale_x
         
-        z_dino = self.repa_model.forward_features(repa_x)[:, self.repa_model.num_prefix_tokens:]
+        # Target
+        with torch.no_grad():
+            z_dino = self.repa_model.forward_features(repa_x)[:, self.repa_model.num_prefix_tokens:]
+        reg_target = self.register_dino_pooler(z_dino)
         
+        # Pred
         mask_ratio = torch.full((N, 1, 1, 1), self.patch_mask_ratio, device=x.device)
 
         h_grid, w_grid = H // P, W // P
@@ -151,17 +174,13 @@ class Denoiser(nn.Module):
         mask_patch = mask_patch.reshape(N, h_grid*w_grid, 1)
 
         x_encoded_masked = torch.where(mask_patch.bool(), x_encoded, self.net.mask_token)
-        x_decoded_mta = self.masked_transformer_adapter(x_encoded_masked, t.flatten(), labels_dropped)
+        reg_pred = self.masked_transformer_adapter(x_encoded_masked, t.flatten(), labels_dropped)
         
-        z_dino = F.normalize(z_dino, dim=-1)
-        x_decoded_mta = F.normalize(x_decoded_mta, dim=-1)
-        cos_sim = F.cosine_similarity(
-            x_decoded_mta,
-            z_dino,
-            dim=-1
-        )
+        # Loss
+        reg_target = F.normalize(reg_target, dim=-1)
+        reg_pred = F.normalize(reg_pred, dim=-1)
+        diff_mta = 1.0 - F.cosine_similarity(reg_pred, reg_target, dim=-1)
         
-        diff_mta = 1.0 - cos_sim 
         loss_mta = diff_mta.mean()
         
         return loss_mta
